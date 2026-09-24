@@ -1,0 +1,936 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="description" content="Simple, fast billing, inventory, customer, and sales management for local shops.">
+    <title>ShopMate POS | Billing &amp; Inventory</title><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;display=swap">
+    <!-- GenMB Capabilities START -->
+    <script>
+window.__genmbBindSdk = window.__genmbBindSdk || function (o) {
+  try {
+    if (!o || (typeof o !== 'object' && typeof o !== 'function')) return o
+    let p = Object.getPrototypeOf(o)
+    while (p && p !== Object.prototype && p !== Function.prototype) {
+      for (const k of Object.getOwnPropertyNames(p)) {
+        if (k === 'constructor' || Object.prototype.hasOwnProperty.call(o, k)) continue
+        const d = Object.getOwnPropertyDescriptor(p, k)
+        if (d && typeof d.value === 'function') o[k] = d.value.bind(o)
+      }
+      p = Object.getPrototypeOf(p)
+    }
+  } catch (e) { /* binding is best-effort; the SDK still works with a receiver */ }
+  return o
+};
+</script>
+    <script>
+// GenMB auth SDK (Capability)
+(function() {
+class GenMBGoogleAuth {
+  constructor({ appId, baseUrl, onError }) {
+    if (!appId) {
+      throw new Error('GenMBGoogleAuth: appId is required')
+    }
+
+    this.appId = appId
+    this.baseUrl = (baseUrl || '/api/auth/google').replace(/\/$/, '')
+    this.user = null
+    this.listeners = []
+    this.onError = onError || console.error
+    this._ready = false
+    this._readyPromise = null
+    this._refreshTimer = null
+  }
+
+  async ready() {
+    if (this._ready) return this
+    if (this._readyPromise) return this._readyPromise
+
+    var self = this
+    this._readyPromise = this.checkSession().then(function () {
+      if (!self.user) {
+        var params = new URLSearchParams(window.location.search)
+        var magicToken = params.get('magic_token')
+        if (magicToken) {
+          return self.verifyMagicLink(magicToken).catch(function () {
+          }).then(function () {
+            params.delete('magic_token')
+            var cleanUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '') + window.location.hash
+            window.history.replaceState({}, '', cleanUrl)
+          })
+        }
+      }
+    }).then(function () {
+      self._ready = true
+      return self
+    })
+    return this._readyPromise
+  }
+
+  async signIn() {
+    return new Promise((resolve, reject) => {
+      let settled = false
+
+      var width = 500
+      var height = 600
+      var left = window.screenX + (window.outerWidth - width) / 2
+      var top = window.screenY + (window.outerHeight - height) / 2
+
+      var navBase = this.baseUrl
+      var extraOrigin = ''
+      var host = window.location.hostname || ''
+      if (/^preview-\d+-/.test(host) && host.slice(-10) === '.genmb.com') {
+        navBase = 'https://' + host.split('.').slice(-2).join('.') + '/api/auth/google'
+        extraOrigin = '&origin=' + encodeURIComponent(window.location.origin)
+      }
+
+      var popup = window.open(
+        navBase + '/authorize?app_id=' + encodeURIComponent(this.appId) + '&redirect=popup' + extraOrigin,
+        'genmb-google-signin',
+        'width=' + width + ',height=' + height + ',left=' + left + ',top=' + top + ',popup=1'
+      )
+
+      if (!popup || popup.closed) {
+        window.location.href = navBase + '/authorize?app_id=' + encodeURIComponent(this.appId) + '&redirect=' + encodeURIComponent(window.location.href) + extraOrigin
+        resolve(null)
+        return
+      }
+
+      var pollSession = null
+
+      var cleanup = function () {
+        clearTimeout(timeout)
+        clearInterval(checkClosed)
+        if (pollSession) clearInterval(pollSession)
+        window.removeEventListener('message', handleMessage)
+      }
+
+      var self = this
+
+      var finishWithUser = function (user) {
+        if (settled) return
+        settled = true
+        cleanup()
+        try { popup.close() } catch (e) { }
+        resolve(user)
+      }
+
+      var timeout = setTimeout(function () {
+        if (settled) return
+        settled = true
+        cleanup()
+        try { popup.close() } catch (e) { }
+        var error = new Error("Sign-in took too long. Please try again.")
+        error.code = 'SIGN_IN_TIMEOUT'
+        self.onError(error)
+        reject(error)
+      }, 120000)
+
+      var handleMessage = function (event) {
+        var origin = event.origin
+        var isGenmb = origin === 'https://genmb.com' || origin.endsWith('.genmb.com')
+        var isLocalhost = origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')
+        if (!isGenmb && !isLocalhost) return
+        if (settled) return
+
+        if (event.data && event.data.error) {
+          settled = true
+          cleanup()
+          var error = new Error(event.data.error)
+          error.code = 'SIGN_IN_FAILED'
+          self.onError(error)
+          reject(error)
+        } else if (event.data && event.data.user) {
+          self.user = event.data.user
+          self._notifyListeners()
+          self._startRefreshTimer()
+          finishWithUser(self.user)
+        }
+      }
+
+      var checkingSession = false
+      var pollStartedAt = Date.now()
+      var pollTick = function () {
+        if (settled || checkingSession) return
+        checkingSession = true
+        self.checkSession().then(function (user) {
+          checkingSession = false
+          if (user && !settled) finishWithUser(user)
+        }).catch(function () { checkingSession = false })
+      }
+      pollSession = setInterval(function () {
+        pollTick()
+        if (!settled && pollSession && Date.now() - pollStartedAt >= 30000) {
+          clearInterval(pollSession)
+          pollSession = setInterval(pollTick, 5000)
+        }
+      }, 1500)
+
+      var checkClosed = setInterval(function () {
+        var closed = false
+        try { closed = popup.closed } catch (e) { closed = false }
+        if (!closed || settled) return
+        self.checkSession().then(function (user) {
+          if (settled) return
+          if (user) finishWithUser(user)
+          else { settled = true; cleanup(); resolve(null) }
+        }).catch(function () {
+          if (settled) return
+          settled = true; cleanup(); resolve(null)
+        })
+      }, 500)
+
+      window.addEventListener('message', handleMessage)
+    })
+  }
+
+  async sendMagicLink(email) {
+    try {
+      var res = await fetch('/api/auth/email/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, app_id: this.appId }),
+        credentials: 'include'
+      })
+      return await res.json()
+    } catch (err) {
+      var error = new Error("We couldn't send the sign-in link. Check your connection and try again.")
+      error.code = 'NETWORK_ERROR'
+      this.onError(error)
+      throw error
+    }
+  }
+
+  async verifyMagicLink(token) {
+    try {
+      var res = await fetch(
+        '/api/auth/email/verify?token=' + encodeURIComponent(token) + '&app_id=' + encodeURIComponent(this.appId),
+        { credentials: 'include' }
+      )
+      if (!res.ok) {
+        var error = new Error("This sign-in link has expired or already been used. Send yourself a new one.")
+        error.code = 'VERIFY_FAILED'
+        this.onError(error)
+        return null
+      }
+      var data = await res.json()
+      if (data.success && data.user) {
+        this.user = data.user
+        this._notifyListeners()
+        this._startRefreshTimer()
+      }
+      return this.user
+    } catch (err) {
+      var error = new Error("We couldn't sign you in. Check your connection and try again.")
+      error.code = 'NETWORK_ERROR'
+      this.onError(error)
+      return null
+    }
+  }
+
+  async signUp(email, password, name) {
+    try {
+      var res = await fetch('/api/auth/password/signup-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, password: password, name: name || null, app_id: this.appId }),
+        credentials: 'include',
+      })
+      var data = await res.json()
+      if (!data.success) {
+        var err = new Error(data.error || 'Sign-up failed')
+        err.code = 'SIGNUP_FAILED'
+        this.onError(err)
+        throw err
+      }
+      return data
+    } catch (err) {
+      if (err && err.code) throw err
+      var nerr = new Error("We couldn't reach the server. Check your connection and try again.")
+      nerr.code = 'NETWORK_ERROR'
+      this.onError(nerr)
+      throw nerr
+    }
+  }
+
+  async verifySignUp(email, code) {
+    try {
+      var res = await fetch('/api/auth/password/signup-verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, code: code, app_id: this.appId }),
+        credentials: 'include',
+      })
+      var data = await res.json()
+      if (!data.success || !data.user) {
+        var err = new Error(data.error || 'Verification failed')
+        err.code = 'SIGNUP_FAILED'
+        this.onError(err)
+        throw err
+      }
+      this.user = data.user
+      this._notifyListeners()
+      this._startRefreshTimer()
+      return this.user
+    } catch (err) {
+      if (err && err.code) throw err
+      var nerr = new Error("We couldn't reach the server. Check your connection and try again.")
+      nerr.code = 'NETWORK_ERROR'
+      this.onError(nerr)
+      throw nerr
+    }
+  }
+
+  async signInWithPassword(email, password) {
+    try {
+      var res = await fetch('/api/auth/password/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, password: password, app_id: this.appId }),
+        credentials: 'include',
+      })
+      var data = await res.json()
+      if (!data.success || !data.user) {
+        var err = new Error(data.error || 'Invalid email or password')
+        err.code = 'LOGIN_FAILED'
+        this.onError(err)
+        throw err
+      }
+      this.user = data.user
+      this._notifyListeners()
+      this._startRefreshTimer()
+      return this.user
+    } catch (err) {
+      if (err && err.code) throw err
+      var nerr = new Error("We couldn't reach the server. Check your connection and try again.")
+      nerr.code = 'NETWORK_ERROR'
+      this.onError(nerr)
+      throw nerr
+    }
+  }
+
+  async requestPasswordReset(email) {
+    try {
+      var res = await fetch('/api/auth/password/reset-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, app_id: this.appId }),
+        credentials: 'include',
+      })
+      return await res.json()
+    } catch (err) {
+      var nerr = new Error("We couldn't reach the server. Check your connection and try again.")
+      nerr.code = 'NETWORK_ERROR'
+      this.onError(nerr)
+      throw nerr
+    }
+  }
+
+  async confirmPasswordReset(email, code, newPassword) {
+    try {
+      var res = await fetch('/api/auth/password/reset-confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, code: code, newPassword: newPassword, app_id: this.appId }),
+        credentials: 'include',
+      })
+      var data = await res.json()
+      if (!data.success) {
+        var err = new Error(data.error || 'Password reset failed')
+        err.code = 'RESET_FAILED'
+        this.onError(err)
+        throw err
+      }
+      return data
+    } catch (err) {
+      if (err && err.code) throw err
+      var nerr = new Error("We couldn't reach the server. Check your connection and try again.")
+      nerr.code = 'NETWORK_ERROR'
+      this.onError(nerr)
+      throw nerr
+    }
+  }
+
+  async signOut() {
+    this._stopRefreshTimer()
+
+    try {
+      await fetch(this.baseUrl + '/signout?app_id=' + encodeURIComponent(this.appId), {
+        method: 'POST',
+        credentials: 'include'
+      })
+    } catch (err) {
+      err.code = 'NETWORK_ERROR'
+      this.onError(err)
+    }
+
+    this.user = null
+    this._notifyListeners()
+  }
+
+  async checkSession() {
+    try {
+      var res = await fetch(this.baseUrl + '/session?app_id=' + encodeURIComponent(this.appId), {
+        credentials: 'include'
+      })
+
+      if (res.ok) {
+        this.user = (await res.json()) || null
+        this._notifyListeners()
+        if (!this.user) {
+          this._stopRefreshTimer()
+          return null
+        }
+        this._startRefreshTimer()
+        this._refreshSession()
+        return this.user
+      }
+      this._stopRefreshTimer()
+      return null
+    } catch (err) {
+      err.code = 'NETWORK_ERROR'
+      this.onError(err)
+      return null
+    }
+  }
+
+  getUser() {
+    return this.user
+  }
+
+  isAuthenticated() {
+    return this.user !== null
+  }
+
+  onAuthStateChange(callback) {
+    this.listeners.push(callback)
+    callback(this.user)
+    var self = this
+    return function () {
+      self.listeners = self.listeners.filter(function (l) { return l !== callback })
+    }
+  }
+
+  _refreshSession() {
+    fetch(this.baseUrl + '/refresh?app_id=' + encodeURIComponent(this.appId), {
+      method: 'POST',
+      credentials: 'include'
+    }).catch(function () {
+    })
+  }
+
+  _startRefreshTimer() {
+    this._stopRefreshTimer()
+    var self = this
+    this._refreshTimer = setInterval(function () {
+      if (self.user) {
+        self._refreshSession()
+      }
+    }, 30 * 60 * 1000)
+  }
+
+  _stopRefreshTimer() {
+    if (this._refreshTimer) {
+      clearInterval(this._refreshTimer)
+      this._refreshTimer = null
+    }
+  }
+
+  _notifyListeners() {
+    var self = this
+    this.listeners.forEach(function (listener) {
+      try {
+        listener(self.user)
+      } catch (err) {
+        console.error('Error in auth state listener:', err)
+      }
+    })
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.GenMBGoogleAuth = GenMBGoogleAuth;
+}
+
+
+// Auto-initialize
+window.genmb = window.genmb || {};
+const config = {
+  "appId": "GmPy1nlvUdaY",
+  "baseUrl": "/api/auth/google"
+};
+window.genmb.auth = new GenMBGoogleAuth(config);
+window.__genmbBindSdk(window.genmb.auth);
+window.genmb.auth.ready();
+})();
+</script>
+    <script>
+// GenMB kv SDK (Capability)
+(function() {
+function _friendlyMsg(s) {
+  if (!s) return 'Something went wrong. Please try again.'
+  var t = String(s)
+  if (/too large|exceeds|payload too|value too/i.test(t)) return 'That is too big to save. Please use a smaller value.'
+  if (/rate limit/i.test(t)) return 'Saving too fast. Please wait a moment and try again.'
+  if (/too many|quota|limit reached|max keys/i.test(t)) return 'This app has reached its storage limit.'
+  if (/being set up|setting up/i.test(t)) return 'Setting things up. Please try again in a moment.'
+  if (/not a number|not numeric|cannot increment/i.test(t)) return "That value can't be counted. Please reset it first."
+  if (/request failed \(http\s*\d+\)/i.test(t) || /\bhttp\s+\d{3}\b/i.test(t)) {
+    return "Couldn't reach saved data. Please try again in a moment."
+  }
+  return t
+}
+
+function _kvError(raw, status) {
+  var err = new Error(_friendlyMsg(raw))
+  err.detail = raw ? String(raw) : err.message
+  if (status) err.status = status
+  if (typeof console !== 'undefined' && console.warn) {
+    console.warn('[genmb.kv] ' + err.detail)
+  }
+  return err
+}
+
+class GenMBKeyValueStore {
+  constructor(config) {
+    if (!config.appId) {
+      throw new Error('GenMBKeyValueStore: appId is required')
+    }
+    this._base = (config.baseUrl || '/api/kv') + '/' + config.appId
+  }
+
+  get(key) {
+    return this._request('GET', this._base + '/' + encodeURIComponent(key), null, true).then(function (d) {
+      return d == null ? null : d.value
+    })
+  }
+
+  set(key, value) {
+    return this._request('POST', this._base, { key: key, value: value })
+  }
+
+  delete(key) {
+    return this._request('DELETE', this._base + '/' + encodeURIComponent(key))
+  }
+
+  list(prefix) {
+    var qs = ''
+    var parts = []
+    if (prefix) parts.push('prefix=' + encodeURIComponent(prefix))
+    parts.push('limit=1000')
+    qs = '?' + parts.join('&')
+    return this._request('GET', this._base + qs)
+  }
+
+  increment(key, by) {
+    if (by === undefined) by = 1
+    return this._request('POST', this._base + '/' + encodeURIComponent(key) + '/increment', { by: by }).then(function (d) {
+      return d.value
+    })
+  }
+
+  async _request(method, url, body, nullOn404) {
+    var attempt = 0
+    var provisionAttempt = 0
+    while (true) {
+      var controller = new AbortController()
+      var timer = setTimeout(function () { controller.abort() }, 30000)
+      try {
+        var options = {
+          method: method,
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal
+        }
+        if (body) {
+          options.body = JSON.stringify(body)
+        }
+        var res = await fetch(url, options)
+        clearTimeout(timer)
+        if (!res.ok) {
+          if (res.status === 404 && nullOn404) {
+            return null
+          }
+          if (res.status >= 500 && attempt < 2) {
+            attempt++
+            await new Promise(function (r) { setTimeout(r, 300 * attempt) })
+            continue
+          }
+          var errBody = null
+          try { errBody = await res.json() } catch (_) {}
+          var raw = (errBody && (errBody.error || errBody.detail)) || ('Request failed (HTTP ' + res.status + ')')
+          if (/being set up|setting up/i.test(raw) && provisionAttempt < 6) {
+            provisionAttempt++
+            await new Promise(function (r) { setTimeout(r, Math.min(3000, 800 * provisionAttempt)) })
+            continue
+          }
+          throw _kvError(raw, res.status)
+        }
+        var result = await res.json()
+        if (!result.success) {
+          throw _kvError(result.error, res.status)
+        }
+        return result.data
+      } catch (err) {
+        clearTimeout(timer)
+        if (err.name === 'AbortError') {
+          if (attempt < 2) {
+            attempt++
+            await new Promise(function (r) { setTimeout(r, 300 * attempt) })
+            continue
+          }
+          throw new Error('The store took too long to respond. Please try again.')
+        }
+        throw err
+      }
+    }
+  }
+}
+
+
+// Auto-initialize
+window.genmb = window.genmb || {};
+const config = {
+  "appId": "GmPy1nlvUdaY",
+  "baseUrl": "/api/kv"
+};
+window.genmb.kv = new GenMBKeyValueStore(config);
+window.__genmbBindSdk(window.genmb.kv);
+})();
+</script>
+    <script>
+// GenMB invoicing-kit SDK (Capability)
+(function() {
+class GenMBInvoicing {
+  constructor({ appId, baseUrl } = {}) {
+    if (!appId) throw new Error('GenMBInvoicing: appId is required')
+    this.appId = appId
+    this.baseUrl = ((baseUrl || '/api/invoicing').replace(/\/$/, '')) + '/' + appId
+    const j = (m, p, b) => this._json(m, p, b)
+    const qs = (params) => {
+      const parts = Object.entries(params || {})
+        .filter(([, v]) => v !== undefined && v !== null && v !== '')
+        .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(String(v)))
+      return parts.length ? '?' + parts.join('&') : ''
+    }
+    this.clients = {
+      list: async () => (await j('GET', '/clients')).clients || [],
+      create: (body) => j('POST', '/clients', body),
+    }
+    this.invoices = {
+      list: async (params) => (await j('GET', '/invoices' + qs(params))).invoices || [],
+      get: async (id) => {
+        const { invoice, lineItems } = await j('GET', '/invoices/' + encodeURIComponent(id))
+        return { ...invoice, lineItems: lineItems || [] }
+      },
+      create: (body) => j('POST', '/invoices', body),
+      markPaid: (id, body) => j('POST', '/invoices/' + encodeURIComponent(id) + '/mark-paid', body || {}),
+      send: (id) => j('POST', '/invoices/' + encodeURIComponent(id) + '/send'),
+      void: (id) => j('POST', '/invoices/' + encodeURIComponent(id) + '/void'),
+      downloadPdf: async (id) => {
+        const res = await fetch(this.baseUrl + '/invoices/' + encodeURIComponent(id) + '/pdf', {
+          credentials: 'include',
+        })
+        if (!res.ok) throw new Error('downloadPdf failed (' + res.status + ')')
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url; a.download = 'invoice-' + id + '.pdf'
+        document.body.appendChild(a); a.click(); a.remove()
+        setTimeout(() => URL.revokeObjectURL(url), 0)
+      },
+    }
+    this.payments = {
+      record: (body) => j('POST', '/payments', body),
+    }
+  }
+
+  async ready() { return this }
+
+  async _json(method, path, body) {
+    const init = { method, headers: { 'Content-Type': 'application/json' }, credentials: 'include' }
+    if (body !== undefined) init.body = JSON.stringify(body)
+    const res = await fetch(this.baseUrl + path, init)
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      const e = new Error(err.error || err.detail || `invoicing ${path} failed (${res.status})`)
+      e.code = err.code || `HTTP_${res.status}`
+      e.status = res.status
+      throw e
+    }
+    const json = await res.json()
+    return json.data !== undefined ? json.data : json
+  }
+}
+
+window.GenMBInvoicing = GenMBInvoicing
+
+
+// Auto-initialize
+window.genmb = window.genmb || {};
+const config = {
+  "appId": "GmPy1nlvUdaY",
+  "baseUrl": "/api/invoicing"
+};
+window.genmb.invoicing = new GenMBInvoicing(config);
+window.__genmbBindSdk(window.genmb.invoicing);
+window.genmb.invoicing.ready();
+})();
+</script>
+    <script>
+// GenMB inventory-kit SDK (Capability)
+(function() {
+class GenMBInventory {
+  constructor({ appId, baseUrl } = {}) {
+    if (!appId) throw new Error('GenMBInventory: appId is required')
+    this.appId = appId
+    this.baseUrl = ((baseUrl || '/api/inventory').replace(/\/$/, '')) + '/' + appId
+    const j = (m, p, b) => this._json(m, p, b)
+    const qs = (params) => {
+      const parts = Object.entries(params || {})
+        .filter(([, v]) => v !== undefined && v !== null && v !== '')
+        .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(String(v)))
+      return parts.length ? '?' + parts.join('&') : ''
+    }
+    this.variants = {
+      list: (params) => j('GET', '/variants' + qs(params)),
+      create: (body) => j('POST', '/variants', body),
+    }
+    this.locations = {
+      list: () => j('GET', '/locations'),
+      create: (body) => j('POST', '/locations', body),
+    }
+    this.stock = {
+      level: (variantId, locationId) => j('GET', '/stock/' + encodeURIComponent(variantId) + (locationId ? '?locationId=' + encodeURIComponent(locationId) : '')),
+      adjust: (variantId, locationId, delta, reason) => j('POST', '/stock/adjust', { variantId, locationId, delta, reason }),
+      transfer: (variantId, fromLoc, toLoc, qty) => j('POST', '/stock/transfer', { variantId, fromLoc, toLoc, qty }),
+    }
+    this.suppliers = {
+      list: () => j('GET', '/suppliers'),
+      create: (body) => j('POST', '/suppliers', body),
+    }
+    this.purchaseOrders = {
+      list: (params) => j('GET', '/purchase-orders' + qs(params)),
+      create: (body) => j('POST', '/purchase-orders', body),
+      receive: (poId, lineId, qty) => j('POST', '/purchase-orders/' + encodeURIComponent(poId) + '/receive', { lineId, qty }),
+    }
+  }
+
+  async ready() { return this }
+
+  async _json(method, path, body) {
+    const init = { method, headers: { 'Content-Type': 'application/json' }, credentials: 'include' }
+    if (body !== undefined) init.body = JSON.stringify(body)
+    const res = await fetch(this.baseUrl + path, init)
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      const e = new Error(err.error || err.detail || `inventory ${path} failed (${res.status})`)
+      e.code = err.code || `HTTP_${res.status}`
+      e.status = res.status
+      throw e
+    }
+    const json = await res.json()
+    return json.data !== undefined ? json.data : json
+  }
+}
+
+window.GenMBInventory = GenMBInventory
+
+
+// Auto-initialize
+window.genmb = window.genmb || {};
+const config = {
+  "appId": "GmPy1nlvUdaY",
+  "baseUrl": "/api/inventory"
+};
+window.genmb.inventory = new GenMBInventory(config);
+window.__genmbBindSdk(window.genmb.inventory);
+window.genmb.inventory.ready();
+})();
+</script>
+    <script>
+// GenMB admin-table SDK (Capability)
+(function() {
+class GenMBAdminTable {
+  constructor({ appId, baseUrl } = {}) {
+    if (!appId) throw new Error('GenMBAdminTable: appId is required')
+    this.appId = appId
+    this.baseUrl = ((baseUrl || '/api/admin-table').replace(/\/$/, '')) + '/' + appId
+  }
+
+  async ready() { return this }
+
+  buildEmptyView() {
+    return {
+      filters: [],
+      sort: null,
+      hiddenColumns: [],
+      pageSize: 25,
+      groupBy: null,
+    }
+  }
+
+  filterRows(rows, filters) {
+    if (!filters || filters.length === 0) return rows
+    return rows.filter((row) => filters.every((f) => this._matchOne(row, f)))
+  }
+
+  _matchOne(row, f) {
+    const v = row[f.field]
+    const t = f.value
+    switch (f.op) {
+      case '=': return v === t
+      case '!=': return v !== t
+      case 'contains': return v != null && String(v).toLowerCase().includes(String(t).toLowerCase())
+      case '>': return v != null && v > t
+      case '<': return v != null && v < t
+      case '>=': return v != null && v >= t
+      case '<=': return v != null && v <= t
+      case 'in': return Array.isArray(t) && t.includes(v)
+      case 'not_in': return Array.isArray(t) && !t.includes(v)
+      case 'is_null': return v == null
+      case 'is_not_null': return v != null
+      default: return true
+    }
+  }
+
+  groupBy(rows, field) {
+    if (!field) return { '': rows }
+    return rows.reduce((acc, row) => {
+      const key = row[field] == null ? '' : String(row[field])
+      if (!acc[key]) acc[key] = []
+      acc[key].push(row)
+      return acc
+    }, {})
+  }
+
+  exportCsv(rows, columns, { filename = 'export.csv' } = {}) {
+    const cols = (columns || (rows[0] ? Object.keys(rows[0]) : [])).map((c) =>
+      typeof c === 'string' ? { key: c, label: c } : c
+    )
+    const header = cols.map((c) => this._csvCell(c.label)).join(',')
+    const body = rows
+      .map((row) => cols.map((c) => this._csvCell(row[c.key])).join(','))
+      .join('\r\n')
+    const csv = header + '\r\n' + body
+    this._download(filename, new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  }
+
+  _csvCell(v) {
+    if (v == null) return ''
+    const s = typeof v === 'object' ? JSON.stringify(v) : String(v)
+    if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"'
+    return s
+  }
+
+  async exportXlsx(rows, columns, { filename = 'export.xlsx' } = {}) {
+    if (!window.XLSX) {
+      await this._loadScript('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js')
+    }
+    const cols = (columns || (rows[0] ? Object.keys(rows[0]) : [])).map((c) =>
+      typeof c === 'string' ? { key: c, label: c } : c
+    )
+    const data = [cols.map((c) => c.label)].concat(
+      rows.map((row) => cols.map((c) => row[c.key]))
+    )
+    const ws = window.XLSX.utils.aoa_to_sheet(data)
+    const wb = window.XLSX.utils.book_new()
+    window.XLSX.utils.book_append_sheet(wb, ws, 'Sheet1')
+    window.XLSX.writeFile(wb, filename)
+  }
+
+  _loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script')
+      s.src = src
+      s.onload = resolve
+      s.onerror = reject
+      document.head.appendChild(s)
+    })
+  }
+
+  _download(filename, blob) {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
+  async bulkUpdate(ids, patch, table, { onProgress } = {}) {
+    if (!Array.isArray(ids) || ids.length === 0) return { updated: 0, errors: [] }
+    if (!table) throw new Error('bulkUpdate requires table')
+    if (!window.genmb || !window.genmb.db || !window.genmb.db[table]) {
+      throw new Error(`bulkUpdate: window.genmb.db.${table} is not available`)
+    }
+    const errors = []
+    let updated = 0
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i]
+      try {
+        await window.genmb.db[table].update(id, patch)
+        updated += 1
+      } catch (e) {
+        errors.push({ id, message: e && e.message ? e.message : String(e) })
+      }
+      if (onProgress) onProgress({ done: i + 1, total: ids.length, updated, errors: errors.length })
+    }
+    return { updated, errors }
+  }
+
+  get _viewsKey() { return 'genmb.adminTable.views.' + this.appId }
+
+  _readAllViews() {
+    try {
+      return JSON.parse(localStorage.getItem(this._viewsKey) || '[]')
+    } catch { return [] }
+  }
+
+  _writeAllViews(views) {
+    localStorage.setItem(this._viewsKey, JSON.stringify(views))
+  }
+
+  savedViews = {
+    list: async () => ({ views: this._readAllViews() }),
+    save: async (name, state) => {
+      const views = this._readAllViews()
+      const id = 'v_' + Math.random().toString(36).slice(2, 10)
+      const view = { id, name, state, createdAt: new Date().toISOString() }
+      views.push(view)
+      this._writeAllViews(views)
+      return { view }
+    },
+    load: async (id) => {
+      const view = this._readAllViews().find((v) => v.id === id)
+      if (!view) throw new Error('view not found')
+      return { view }
+    },
+    delete: async (id) => {
+      this._writeAllViews(this._readAllViews().filter((v) => v.id !== id))
+      return { deleted: true }
+    },
+  }
+}
+
+window.GenMBAdminTable = GenMBAdminTable
+
+
+// Auto-initialize
+window.genmb = window.genmb || {};
+const config = {
+  "appId": "GmPy1nlvUdaY"
+};
+window.genmb.adminTable = new GenMBAdminTable(config);
+window.__genmbBindSdk(window.genmb.adminTable);
+window.genmb.adminTable.ready();
+})();
+</script>
+    <!-- GenMB Capabilities END -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
